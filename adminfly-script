@@ -1,0 +1,1022 @@
+--- Script FLY & TELEPORT | UPDATE 1 ---
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local Workspace = game:GetService("Workspace")
+
+local hooked = setmetatable({}, {__mode = "k"})
+
+if _G.AdminFlyRunning then
+    pcall(function()
+        _G.AdminFlyRunning:Disconnect()
+    end)
+end
+
+local runConnection = nil
+_G.AdminFlyRunning = nil
+
+local isMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+
+local PlaceId = game.PlaceId
+local SAVE_FILE = "AdminFly_Speed.json"
+
+local MIN_SPEED = 50
+
+local SaveData = {
+	speed = MIN_SPEED,
+	autoOpen = false,
+	walkSpeed = 16,
+
+    guiPos = nil,
+	openBtnPos = nil,
+}
+
+if typeof(isfile) == "function" and typeof(readfile) == "function" then
+	if isfile(SAVE_FILE) then
+		local success, result = pcall(function()
+			return HttpService:JSONDecode(readfile(SAVE_FILE))
+		end)
+		
+		if success and type(result) == "table" then
+			SaveData.speed = result.speed or 50
+			SaveData.autoOpen = result.autoOpen or false
+            SaveData.walkSpeed = result.walkSpeed or 15
+            SaveData.guiPos = result.guiPos
+            SaveData.openBtnPos = result.openBtnPos
+			print("Config Loaded")
+		else
+			warn("Config Load Failed")
+		end
+	end
+else
+	warn("Executor does not support file system")
+end
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+local function getChar()
+	local char = player.Character or player.CharacterAdded:Wait()
+	return char, char:WaitForChild("Humanoid"), char:WaitForChild("HumanoidRootPart")
+end
+
+local character, humanoid, root = getChar()
+
+_G.AdminFlyData = _G.AdminFlyData or {}
+
+local teleportPoints = _G.AdminFlyData.teleportPoints or {}
+local selectedPoints = {}
+
+_G.AdminFlyData.teleportPoints = teleportPoints
+_G.AdminFlyData.selectedPoints = selectedPoints
+
+local toggleIndex = 1
+local teleporting = false
+local loopDelay = 1.35
+
+local walkSpeedEnabled = false
+local walkSpeed = SaveData.walkSpeed or 16
+local normalSpeed = humanoid.WalkSpeed
+
+local flying = false
+local mobileUp = false
+local mobileDown = false
+local speed = SaveData.speed or MIN_SPEED
+
+local bodyGyro, bodyVelocity
+local mobileFlyUp, mobileFlyDown
+
+local dragging, dragStart, startPos
+local guiVisible = true
+local openBtnDragging = false
+local openBtnMoved = false
+local alive = true
+local tpThread = nil
+
+local function SaveConfig()
+	if typeof(writefile) == "function" then
+		pcall(function()
+			writefile(SAVE_FILE, HttpService:JSONEncode({
+				speed = SaveData.speed,
+				autoOpen = SaveData.autoOpen,
+				walkSpeed = SaveData.walkSpeed,
+				guiPos = SaveData.guiPos,
+				openBtnPos = SaveData.openBtnPos
+			}))
+		end)
+	end
+end
+
+local function getSeatBasePart()
+	if root and root.Parent then
+		return root
+	end
+	return nil
+end
+
+local function safeTeleport(cf)
+	if not root or not humanoid then return end
+
+	if bodyVelocity then
+		bodyVelocity.Velocity = Vector3.zero
+	end
+
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+
+	humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+
+	root.CFrame = cf + Vector3.new(0, 3.5, 0)
+
+	RunService.Heartbeat:Wait()
+
+	humanoid:ChangeState(Enum.HumanoidStateType.Running)
+end
+
+local function getCurrentPoint()
+	if #selectedPoints == 0 then
+		return nil
+	end
+
+	if #selectedPoints == 1 then
+		return selectedPoints[1]
+	end
+
+	if not selectedPoints[1] or not selectedPoints[2] then
+		return nil
+	end
+
+	local idx = selectedPoints[toggleIndex]
+	toggleIndex = toggleIndex == 1 and 2 or 1
+	return idx
+end
+
+local function makeDraggable(ui, saveKey)
+	local drag = false
+	local dragStartPos, startUIPos
+
+	ui.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            drag = true
+            dragStartPos = input.Position
+            startUIPos = ui.Position
+
+            if ui == openBtn then
+                openBtnDragging = true
+                openBtnMoved = false
+            end
+        end
+    end)
+
+	ui.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            drag = false
+
+            if ui == openBtn then
+                task.wait()
+                openBtnDragging = false
+            end
+
+            if saveKey then
+                SaveData[saveKey] = {
+                    XS = ui.Position.X.Scale,
+                    XO = ui.Position.X.Offset,
+                    YS = ui.Position.Y.Scale,
+                    YO = ui.Position.Y.Offset
+                }
+                SaveConfig()
+            end
+        end
+    end)
+
+	UIS.InputChanged:Connect(function(input)
+        if drag and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStartPos
+
+            if ui == openBtn and delta.Magnitude > 3 then
+                openBtnMoved = true
+            end
+
+            ui.Position = UDim2.new(
+                startUIPos.X.Scale,
+                startUIPos.X.Offset + delta.X,
+                startUIPos.Y.Scale,
+                startUIPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+if player.PlayerGui:FindFirstChild("AdminFlyGUI") then
+	player.PlayerGui.AdminFlyGUI:Destroy()
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "AdminFlyGUI"
+gui.Parent = player.PlayerGui
+gui.ResetOnSpawn = false
+
+local frame = Instance.new("Frame", gui)
+frame.Size = UDim2.fromScale(0.25,0.65)
+if SaveData.guiPos then
+	frame.Position = UDim2.new(
+		SaveData.guiPos.XS,
+		SaveData.guiPos.XO,
+		SaveData.guiPos.YS,
+		SaveData.guiPos.YO
+	)
+else
+	frame.Position = UDim2.fromScale(0.05,0.5)
+end
+frame.AnchorPoint = Vector2.new(0,0.5)
+frame.BackgroundColor3 = Color3.fromRGB(35,35,35)
+frame.BorderSizePixel = 0
+frame.Active = true
+makeDraggable(frame, "guiPos")
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0,16)
+
+local stroke = Instance.new("UIStroke", frame)
+stroke.Color = Color3.fromRGB(5,255,150)
+stroke.Thickness = 2
+stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+local container = Instance.new("Frame", frame)
+container.Size = UDim2.fromScale(1,0.82)
+container.Position = UDim2.fromScale(0,0.14)
+container.BackgroundTransparency = 1
+
+local layout = Instance.new("UIListLayout", container)
+layout.Padding = UDim.new(0,6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+local openBtn = Instance.new("TextButton", gui)
+openBtn.Size = UDim2.fromScale(0.09,0.13)
+if SaveData.openBtnPos then
+	openBtn.Position = UDim2.new(
+		SaveData.openBtnPos.XS,
+		SaveData.openBtnPos.XO,
+		SaveData.openBtnPos.YS,
+		SaveData.openBtnPos.YO
+	)
+else
+	openBtn.Position = UDim2.fromScale(0.02,0.5)
+end
+openBtn.AnchorPoint = Vector2.new(0,0.5)
+openBtn.Text = "👁 OPEN"
+openBtn.TextScaled = true
+openBtn.Font = Enum.Font.GothamBold
+openBtn.BackgroundColor3 = Color3.fromRGB(0,200,120)
+openBtn.TextColor3 = Color3.new(1,1,1)
+openBtn.BorderSizePixel = 0
+openBtn.TextStrokeTransparency = 0
+openBtn.TextStrokeColor3 = Color3.new(0,0,0)
+openBtn.Visible = false
+makeDraggable(openBtn, "openBtnPos")
+Instance.new("UICorner", openBtn).CornerRadius = UDim.new(1,0)
+
+if isMobile then
+	mobileFlyUp = Instance.new("TextButton", gui)
+	mobileFlyUp.Size = UDim2.fromScale(0.12,0.08)
+	mobileFlyUp.Position = UDim2.fromScale(0.86,0.65)
+	mobileFlyUp.Text = "⬆"
+	mobileFlyUp.TextScaled = true
+	mobileFlyUp.BackgroundColor3 = Color3.fromRGB(0,180,120)
+	mobileFlyUp.Visible = false
+	Instance.new("UICorner", mobileFlyUp)
+
+	mobileFlyDown = mobileFlyUp:Clone()
+	mobileFlyDown.Parent = gui
+	mobileFlyDown.Position = UDim2.fromScale(0.86,0.75)
+	mobileFlyDown.Text = "⬇"
+end
+
+local header = Instance.new("Frame", frame)
+header.Size = UDim2.fromScale(1,0.12)
+header.BackgroundTransparency = 1
+header.Active = true
+
+local function applyAutoOpen()
+	if SaveData.autoOpen then
+		frame.Visible = true
+		openBtn.Visible = false
+		guiVisible = true
+	else
+		frame.Visible = false
+		openBtn.Visible = true
+		guiVisible = false
+	end
+end
+
+applyAutoOpen()
+
+local title = Instance.new("TextLabel", header)
+title.Size = UDim2.fromScale(0.6,1)
+title.Position = UDim2.fromScale(0.05,0)
+title.BackgroundTransparency = 1
+title.Text = "ADMIN FLY + TP"
+title.TextScaled = true
+title.Font = Enum.Font.GothamBold
+title.TextColor3 = Color3.fromRGB(0,255,150)
+title.TextStrokeTransparency = 0
+title.TextStrokeColor3 = Color3.new(0,0,0)
+title.TextXAlignment = Enum.TextXAlignment.Left
+
+local closeBtn = Instance.new("TextButton", header)
+closeBtn.Size = UDim2.fromScale(0.14,0.7)
+closeBtn.Position = UDim2.fromScale(0.83,0.15)
+closeBtn.Text = "X"
+closeBtn.TextScaled = true
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.BackgroundColor3 = Color3.fromRGB(180,50,50)
+closeBtn.TextColor3 = Color3.new(1,1,1)
+closeBtn.TextStrokeTransparency = 0
+closeBtn.TextStrokeColor3 = Color3.new(0,0,0)
+closeBtn.BorderSizePixel = 0
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(1,0)
+
+local miniBtn = Instance.new("TextButton", header)
+miniBtn.Size = UDim2.fromScale(0.14,0.7)
+miniBtn.Position = UDim2.fromScale(0.67,0.15)
+miniBtn.Text = "-"
+miniBtn.TextScaled = true
+miniBtn.Font = Enum.Font.GothamBold
+miniBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
+miniBtn.TextColor3 = Color3.new(1,1,1)
+miniBtn.TextStrokeTransparency = 0
+miniBtn.TextStrokeColor3 = Color3.new(0,0,0)
+miniBtn.BorderSizePixel = 0
+Instance.new("UICorner", miniBtn).CornerRadius = UDim.new(1,0)
+
+player.CharacterAdded:Connect(function()
+	task.wait(0.4)
+
+	character, humanoid, root = getChar()
+
+	normalSpeed = humanoid.WalkSpeed
+
+	if walkSpeedEnabled then
+		humanoid.WalkSpeed = walkSpeed
+	end
+
+	flying = false
+	if bodyGyro then bodyGyro:Destroy() bodyGyro=nil end
+	if bodyVelocity then bodyVelocity:Destroy() bodyVelocity=nil end
+	if flyBtn then flyBtn.Text = "FLY : OFF" end
+
+	teleporting = false
+	_G.AdminFlyTeleporting = false
+	
+    if tpLoopBtn then tpLoopBtn.Text = "TP LOOP : OFF" end
+
+    task.wait(0.3)
+    
+	applyAutoOpen()
+end)
+
+local function button(text)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0.85,0,0.065,0)
+	b.Text = text
+	b.TextScaled = true
+	b.Font = Enum.Font.GothamBold
+	b.BackgroundColor3 = Color3.fromRGB(40,40,40)
+	b.TextColor3 = Color3.new(1,1,1)
+	b.TextStrokeTransparency = 0
+	b.TextStrokeColor3 = Color3.new(0,0,0)
+	b.BorderSizePixel = 0
+	b.Parent = container
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0,12)
+	return b
+end
+
+local selectDefaultText = "SELECT SET TELEPORT: EMPTY"
+
+local setChooseBtn = button("CHOOSE SET TELEPORT POINT")
+local selectBtn = button("")
+local tpOnceBtn = button("TELEPORT")
+local tpLoopBtn = button("TP LOOP : OFF")
+local flyBtn = button("FLY : OFF")
+local walkBtn = button("WALK SPEED : OFF")
+local autoOpenBtn = button("")
+local serverHopBtn = button("SERVER HOP")
+local plusBtn = button("+ SPEED")
+local minusBtn = button("- SPEED")
+
+selectBtn.Text = selectDefaultText
+
+local speedLabel = Instance.new("TextLabel", container)
+speedLabel.Size = UDim2.fromScale(0.85,0.07)
+speedLabel.Position = UDim2.fromScale(0.075,0.78)
+speedLabel.BackgroundTransparency = 1
+speedLabel.TextScaled = true
+speedLabel.Font = Enum.Font.GothamBold
+speedLabel.TextStrokeTransparency = 0
+speedLabel.TextStrokeColor3 = Color3.new(0,0,0)
+speedLabel.TextColor3 = Color3.fromRGB(0,255,150)
+
+local credit = Instance.new("TextLabel", container)
+credit.Size = UDim2.fromScale(0.85,0.1)
+credit.Position = UDim2.fromScale(0.075,0.93)
+credit.BackgroundTransparency = 1
+credit.Text = "By: GT_WIBUVN"
+credit.TextScaled = true
+credit.Font = Enum.Font.Gotham
+credit.TextColor3 = Color3.fromRGB(214,214,214)
+credit.TextTransparency = 0.15
+credit.TextStrokeTransparency = 0
+credit.TextStrokeColor3 = Color3.new(0,0,0)
+credit.TextXAlignment = Enum.TextXAlignment.Right
+
+local chooseFrame = Instance.new("Frame", gui)
+chooseFrame.Size = UDim2.fromScale(0.25,0.45)
+chooseFrame.Position = UDim2.fromScale(0.5,0.5)
+chooseFrame.AnchorPoint = Vector2.new(0.5,0.5)
+chooseFrame.BackgroundColor3 = Color3.fromRGB(30,30,30)
+chooseFrame.Visible = false
+chooseFrame.Active = true
+makeDraggable(chooseFrame)
+Instance.new("UICorner", chooseFrame).CornerRadius = UDim.new(0,16)
+
+local selectFrame = chooseFrame:Clone()
+selectFrame.Parent = gui
+selectFrame.Visible = false
+makeDraggable(selectFrame)
+
+local function updateAutoButton()
+	if SaveData.autoOpen then
+		autoOpenBtn.Text = "AUTO EXECUTOR : ON"
+		autoOpenBtn.BackgroundColor3 = Color3.fromRGB(0,180,120)
+	else
+		autoOpenBtn.Text = "AUTO EXECUTOR : OFF"
+		autoOpenBtn.BackgroundColor3 = Color3.fromRGB(40,40,40)
+	end
+end
+
+updateAutoButton()
+
+local function updateSpeed()
+	speedLabel.Text = "FLY: "..speed.." | WALK: "..walkSpeed
+end
+
+updateSpeed()
+
+local function addClose(f)
+	local x = Instance.new("TextButton", f)
+	x.Size = UDim2.fromScale(0.15,0.15)
+	x.Position = UDim2.fromScale(0.935,0.01)
+	x.Text = "X"
+	x.TextScaled = true
+	x.Font = Enum.Font.GothamBold
+	x.BackgroundColor3 = Color3.fromRGB(180,60,60)
+    x.TextStrokeTransparency = 0
+    x.TextStrokeColor3 = Color3.new(0,0,0)
+	x.TextColor3 = Color3.new(1,1,1)
+	x.BorderSizePixel = 0
+	Instance.new("UICorner", x).CornerRadius = UDim.new(1,0)
+	x.MouseButton1Click:Connect(function()
+		f.Visible = false
+	end)
+end
+
+addClose(chooseFrame)
+addClose(selectFrame)
+
+local function ServerHop()
+
+    local req = request or http_request or syn and syn.request
+    if not req then
+        warn("Executor does not support requests")
+        return
+    end
+
+    local servers = {}
+    local cursor = ""
+
+    for i = 1,3 do
+
+        local url = "https://games.roblox.com/v1/games/"..PlaceId.."/servers/Public?sortOrder=Asc&limit=100&cursor="..cursor
+
+        local success, response = pcall(function()
+            return req({Url = url, Method = "GET"})
+        end)
+
+        if success and response and response.Body then
+            local data = HttpService:JSONDecode(response.Body)
+
+            for _, s in ipairs(data.data) do
+                if s.id ~= game.JobId and s.playing < s.maxPlayers then
+                    table.insert(servers, s.id)
+                end
+            end
+
+            if #servers > 0 then break end
+
+            cursor = data.nextPageCursor
+            if not cursor then break end
+        else
+            break
+        end
+    end
+
+    if #servers > 0 then
+        local chosen = servers[math.random(#servers)]
+        print("Joining new server...")
+        task.wait(0.155)
+        TeleportService:TeleportToPlaceInstance(PlaceId, chosen, player)
+    else
+        warn("No suitable server found")
+    end
+end
+
+local function populate(frameUI, mode)
+	frameUI:ClearAllChildren()
+	addClose(frameUI)
+
+	for i = 1, 10 do
+		local b = Instance.new("TextButton", frameUI)
+		b.Size = UDim2.fromScale(0.85, 0.08)
+		b.Position = UDim2.fromScale(0.075, 0.05 + (i - 1) * 0.085)
+		b.TextScaled = true
+		b.Font = Enum.Font.GothamBold
+        b.TextStrokeTransparency = 0
+        b.TextStrokeColor3 = Color3.new(0,0,0)
+		b.BorderSizePixel = 0
+		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 10)
+
+		if mode == "set" then
+			if teleportPoints[i] then
+				b.Text = "REMOVE POINT " .. i
+				b.BackgroundColor3 = Color3.fromRGB(180, 60, 60)
+				b.TextColor3 = Color3.new(1, 1, 1)
+			else
+				b.Text = "SET POINT " .. i
+				b.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+				b.TextColor3 = Color3.new(1, 1, 1)
+			end
+
+			b.MouseButton1Click:Connect(function()
+				if teleportPoints[i] then
+                    teleportPoints[i] = nil
+
+                    local found = table.find(selectedPoints, i)
+                    if found then
+                        table.remove(selectedPoints, found)
+                    end
+				else
+					teleportPoints[i] = root.CFrame
+				end
+
+				if #selectedPoints == 0 then
+					selectBtn.Text = selectDefaultText
+				elseif #selectedPoints == 1 then
+					selectBtn.Text = "SELECT SET TELEPORT: POINT " .. selectedPoints[1]
+				else
+					selectBtn.Text = "SELECT SET TELEPORT: POINT " .. selectedPoints[1] .. " & " .. selectedPoints[2]
+				end
+
+				populate(frameUI, "set")
+			end)
+		else 
+			if teleportPoints[i] then
+				b.Text = "POINT " .. i
+				b.BackgroundColor3 = Color3.fromRGB(0, 180, 120)
+				b.TextColor3 = Color3.new(1, 1, 1)
+
+                b.MouseButton1Click:Connect(function()
+                    local found = table.find(selectedPoints, i)
+
+                    if found then
+                        table.remove(selectedPoints, found)
+                    else
+                        if #selectedPoints < 2 then
+                            table.insert(selectedPoints, i)
+                        else
+                            selectedPoints[1] = selectedPoints[2]
+                            selectedPoints[2] = i
+                        end
+                    end
+
+                    _G.AdminFlyTeleporting = true
+                    teleporting = true
+                    tpLoopBtn.Text = "TP LOOP : OFF"
+                    toggleIndex = 1
+
+                    if #selectedPoints == 0 then
+                        selectBtn.Text = selectDefaultText
+                    elseif #selectedPoints == 1 then
+                        selectBtn.Text = "SELECT SET TELEPORT: POINT " .. selectedPoints[1]
+                    else
+                        selectBtn.Text = "SELECT SET TELEPORT: POINT " .. selectedPoints[1] .. " & " .. selectedPoints[2]
+                        selectFrame.Visible = false
+                    end
+                end)
+			else
+				b.Text = "EMPTY"
+				b.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+				b.TextColor3 = Color3.fromRGB(120, 120, 120)
+				b.AutoButtonColor = false
+			end
+		end
+	end
+end
+
+local function attachFlyMovers(basePart)
+
+	if bodyVelocity then bodyVelocity:Destroy() end
+	if bodyGyro then bodyGyro:Destroy() end
+
+	bodyVelocity = Instance.new("BodyVelocity")
+	bodyVelocity.MaxForce = Vector3.new(9e9,9e9,9e9)
+	bodyVelocity.Velocity = Vector3.zero
+	bodyVelocity.P = 10000
+	bodyVelocity.Parent = basePart
+
+	bodyGyro = Instance.new("BodyGyro")
+	bodyGyro.MaxTorque = Vector3.new(9e9,9e9,9e9)
+	bodyGyro.P = 10000
+	bodyGyro.CFrame = basePart.CFrame
+	bodyGyro.Parent = basePart
+end
+
+setChooseBtn.MouseButton1Click:Connect(function()
+	selectFrame.Visible = false
+	chooseFrame.Visible = not chooseFrame.Visible
+	if chooseFrame.Visible then
+		populate(chooseFrame,"set")
+	end
+end)
+
+selectBtn.MouseButton1Click:Connect(function()
+	chooseFrame.Visible = false
+	selectFrame.Visible = not selectFrame.Visible
+	if selectFrame.Visible then
+		populate(selectFrame,"select")
+	end
+end)
+
+autoOpenBtn.MouseButton1Click:Connect(function()
+	SaveData.autoOpen = not SaveData.autoOpen
+	SaveConfig()
+	updateAutoButton()
+	applyAutoOpen()
+end)
+
+tpOnceBtn.MouseButton1Click:Connect(function()
+    local idx = getCurrentPoint()
+    if idx and teleportPoints[idx] and root then
+        if flying and bodyVelocity then
+            bodyVelocity.Velocity = Vector3.zero
+        end
+
+        safeTeleport(teleportPoints[idx])
+    end
+end)
+
+tpLoopBtn.MouseButton1Click:Connect(function()
+	if teleporting then
+		teleporting = false
+		_G.AdminFlyTeleporting = false
+		tpLoopBtn.Text = "TP LOOP : OFF"
+        tpLoopBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		return
+	end
+
+	if #selectedPoints == 0 then
+        warn("No teleport point selected")
+        return
+    end
+
+	teleporting = true
+	_G.AdminFlyTeleporting = true
+	tpLoopBtn.Text = "TP LOOP : ON"
+    tpLoopBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
+	
+	if tpThread then return end
+
+    tpThread = task.spawn(function()
+        while teleporting and _G.AdminFlyTeleporting do
+            local idx = getCurrentPoint()
+            if not teleporting then break end
+
+            if idx and teleportPoints[idx] and root then
+                safeTeleport(teleportPoints[idx])
+            end
+
+            task.wait(loopDelay)
+        end
+        tpThread = nil
+    end)
+end)
+
+flyBtn.MouseButton1Click:Connect(function()
+	if flying then
+		flying = false
+		humanoid.PlatformStand = false
+
+		if bodyGyro then bodyGyro:Destroy() bodyGyro=nil end
+		if bodyVelocity then bodyVelocity:Destroy() bodyVelocity=nil end
+
+        if isMobile then
+            mobileFlyUp.Visible = false
+            mobileFlyDown.Visible = false
+        end
+
+		flyBtn.Text = "FLY : OFF"
+        flyBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	else
+		flying = true
+        humanoid.PlatformStand = true
+		
+		local basePart = getSeatBasePart() or root
+        attachFlyMovers(basePart)
+
+        if isMobile then
+            mobileFlyUp.Visible = true
+            mobileFlyDown.Visible = true
+        end
+
+		flyBtn.Text = "FLY : ON"
+        flyBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
+	end
+
+	updateSpeed()
+end)
+
+if isMobile then
+	mobileFlyUp.MouseButton1Down:Connect(function() mobileUp = true end)
+	mobileFlyUp.MouseButton1Up:Connect(function() mobileUp = false end)
+
+	mobileFlyDown.MouseButton1Down:Connect(function() mobileDown = true end)
+	mobileFlyDown.MouseButton1Up:Connect(function() mobileDown = false end)
+end
+
+walkBtn.MouseButton1Click:Connect(function()
+	walkSpeedEnabled = not walkSpeedEnabled
+
+	if walkSpeedEnabled then
+		humanoid.WalkSpeed = walkSpeed
+		walkBtn.Text = "WALK SPEED : ON"
+		walkBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
+	else
+		humanoid.WalkSpeed = normalSpeed
+		walkBtn.Text = "WALK SPEED : OFF"
+		walkBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	end
+
+    SaveData.walkSpeed = walkSpeed
+    SaveConfig()
+    updateSpeed()
+end)
+
+plusBtn.MouseButton1Click:Connect(function()
+	if walkSpeedEnabled then
+		walkSpeed += 5
+		humanoid.WalkSpeed = walkSpeed
+		SaveData.walkSpeed = walkSpeed
+	else
+		speed += 50
+		SaveData.speed = speed
+	end
+	SaveConfig()
+	updateSpeed()
+end)
+
+minusBtn.MouseButton1Click:Connect(function()
+	if walkSpeedEnabled then
+		walkSpeed = math.max(16, walkSpeed - 5)
+		humanoid.WalkSpeed = walkSpeed
+		SaveData.walkSpeed = walkSpeed
+	else
+		speed = math.max(MIN_SPEED, speed - 50)
+		SaveData.speed = speed
+	end
+	SaveConfig()
+	updateSpeed()
+end)
+
+serverHopBtn.MouseButton1Click:Connect(function()
+	ServerHop()
+end)
+
+runConnection = RunService.RenderStepped:Connect(function()
+	if not flying or not bodyVelocity then return end
+
+	_G.AdminFlyRunning = runConnection
+
+	local cam = camera.CFrame
+	local move = Vector3.zero
+	if UIS:IsKeyDown(Enum.KeyCode.W) then move += cam.LookVector end
+	if UIS:IsKeyDown(Enum.KeyCode.S) then move -= cam.LookVector end
+	if UIS:IsKeyDown(Enum.KeyCode.A) then move -= cam.RightVector end
+	if UIS:IsKeyDown(Enum.KeyCode.D) then move += cam.RightVector end
+
+	-- PC --
+    if UIS:IsKeyDown(Enum.KeyCode.Space) then move += cam.UpVector end
+    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then move -= cam.UpVector end
+
+    -- MOBILE --
+    if mobileUp then move += cam.UpVector end
+    if mobileDown then move -= cam.UpVector end
+
+    if isMobile then
+        move += humanoid.MoveDirection
+    end
+
+	if move.Magnitude > 0 then
+        move = move.Unit
+    else
+        bodyVelocity.Velocity = Vector3.zero
+        return
+    end
+
+	local basePart = getSeatBasePart()
+    if not basePart then return end
+
+   if bodyVelocity.Parent ~= basePart then
+        bodyVelocity.Parent = basePart
+        bodyGyro.Parent = basePart
+    end
+
+    bodyVelocity.Velocity = move * speed
+    bodyGyro.CFrame = cam
+end)
+
+miniBtn.MouseButton1Click:Connect(function()
+	frame.Visible = false
+	openBtn.Visible = true
+	guiVisible = false
+end)
+
+openBtn.MouseButton1Click:Connect(function()
+	if openBtnDragging or openBtnMoved then
+		return
+	end
+
+	frame.Visible = true
+	openBtn.Visible = false
+	guiVisible = true
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+	alive = false
+
+	teleporting = false
+	_G.AdminFlyTeleporting = false
+    
+	flying = false
+
+	if humanoid then
+		humanoid.PlatformStand = false
+		humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end
+
+	if bodyGyro then bodyGyro:Destroy() bodyGyro = nil end
+	if bodyVelocity then bodyVelocity:Destroy() bodyVelocity = nil end
+
+	gui:Destroy()
+end)
+
+UIS.InputBegan:Connect(function(input)
+    if not alive or not gui or not gui.Parent then return end
+
+	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+
+	if input.KeyCode == Enum.KeyCode.F then
+		frame.Visible = not frame.Visible
+        openBtn.Visible = not openBtn.Visible
+        guiVisible = not guiVisible
+
+	elseif input.KeyCode == Enum.KeyCode.R then
+		if not humanoid or not root then return end
+
+		if flying then
+			flying = false
+			humanoid.PlatformStand = false
+
+			if bodyGyro then bodyGyro:Destroy() bodyGyro=nil end
+			if bodyVelocity then bodyVelocity:Destroy() bodyVelocity=nil end
+
+			flyBtn.Text = "FLY : OFF"
+            flyBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		else
+			flying = true
+            humanoid.PlatformStand = true
+			local basePart = getSeatBasePart() or root
+            attachFlyMovers(basePart)
+
+			flyBtn.Text = "FLY : ON"
+            flyBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
+		end
+
+		updateSpeed()
+
+	elseif input.KeyCode == Enum.KeyCode.T then
+		 local idx = getCurrentPoint()
+        if idx and teleportPoints[idx] and root then
+            if flying and bodyVelocity then
+                bodyVelocity.Velocity = Vector3.zero
+            end
+
+            safeTeleport(teleportPoints[idx])
+        end
+
+	elseif input.KeyCode == Enum.KeyCode.G then
+		speed += 50
+        SaveData.speed = speed
+        SaveConfig()
+        updateSpeed()
+
+	elseif input.KeyCode == Enum.KeyCode.H then
+		speed = math.max(MIN_SPEED, speed - 50)
+        SaveData.speed = speed
+        SaveConfig()
+        updateSpeed()
+
+    elseif input.KeyCode == Enum.KeyCode.J then
+        local tpThread
+
+        if teleporting then
+            teleporting = false
+			_G.AdminFlyTeleporting = false
+            tpLoopBtn.Text = "TP LOOP : OFF"
+            tpLoopBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+            return
+        end
+
+        if #selectedPoints == 0 then
+            warn("No teleport point selected")
+            return
+        end
+
+        teleporting = true
+		_G.AdminFlyTeleporting = true
+        tpLoopBtn.Text = "TP LOOP : ON"
+        tpLoopBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
+
+      if tpThread then return end
+
+        tpThread = task.spawn(function()
+            while teleporting and _G.AdminFlyTeleporting do
+                local idx = getCurrentPoint()
+                if not teleporting then break end
+
+                if idx and teleportPoints[idx] and root then
+                    safeTeleport(teleportPoints[idx])
+                end
+
+                task.wait(loopDelay)
+            end
+            tpThread = nil
+        end)
+
+    elseif input.KeyCode == Enum.KeyCode.K then
+        ServerHop()
+	end
+end)
+
+--- Bonus ---
+
+local function hookPrompt(prompt)
+	if not prompt:IsA("ProximityPrompt") then return end
+	if hooked[prompt] then return end
+
+	hooked[prompt] = true
+
+	if prompt.HoldDuration ~= 0 then
+		prompt.HoldDuration = 0
+	end
+
+	prompt:GetPropertyChangedSignal("HoldDuration"):Connect(function()
+		if prompt and prompt.Parent and prompt.HoldDuration ~= 0 then
+			prompt.HoldDuration = 0
+		end
+	end)
+end
+
+for _, v in ipairs(Workspace:GetDescendants()) do
+	if v:IsA("ProximityPrompt") then
+		hookPrompt(v)
+	end
+end
+
+Workspace.DescendantAdded:Connect(function(v)
+	if v:IsA("ProximityPrompt") then
+		hookPrompt(v)
+	end
+end)
+
+task.spawn(function()
+    while alive do
+        task.wait(5)
+
+        if not player.Character or not root then
+            character, humanoid, root = getChar()
+        end
+    end
+end)
+
+task.delay(1.05, applyAutoOpen)

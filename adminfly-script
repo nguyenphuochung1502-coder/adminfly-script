@@ -1,4 +1,4 @@
---- Script FLY & TELEPORT | UPDATE 1 ---
+--- Script FLY & TELEPORT | UPDATE 1.5 ---
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -10,9 +10,9 @@ local Workspace = game:GetService("Workspace")
 local hooked = setmetatable({}, {__mode = "k"})
 
 if _G.AdminFlyRunning then
-    pcall(function()
-        _G.AdminFlyRunning:Disconnect()
-    end)
+	pcall(function()
+		_G.AdminFlyRunning:Disconnect()
+	end)
 end
 
 local runConnection = nil
@@ -24,13 +24,15 @@ local PlaceId = game.PlaceId
 local SAVE_FILE = "AdminFly_Speed.json"
 
 local MIN_SPEED = 50
+local lastCF = nil
+local antiTP = false
 
 local SaveData = {
 	speed = MIN_SPEED,
 	autoOpen = false,
 	walkSpeed = 16,
 
-    guiPos = nil,
+	guiPos = nil,
 	openBtnPos = nil,
 }
 
@@ -39,13 +41,13 @@ if typeof(isfile) == "function" and typeof(readfile) == "function" then
 		local success, result = pcall(function()
 			return HttpService:JSONDecode(readfile(SAVE_FILE))
 		end)
-		
+
 		if success and type(result) == "table" then
 			SaveData.speed = result.speed or 50
 			SaveData.autoOpen = result.autoOpen or false
-            SaveData.walkSpeed = result.walkSpeed or 15
-            SaveData.guiPos = result.guiPos
-            SaveData.openBtnPos = result.openBtnPos
+			SaveData.walkSpeed = result.walkSpeed or 15
+			SaveData.guiPos = result.guiPos
+			SaveData.openBtnPos = result.openBtnPos
 			print("Config Loaded")
 		else
 			warn("Config Load Failed")
@@ -121,19 +123,29 @@ local function safeTeleport(cf)
 	if not root or not humanoid then return end
 
 	if bodyVelocity then
-		bodyVelocity.Velocity = Vector3.zero
+		bodyVelocity:Destroy()
+		bodyVelocity = nil
+	end
+	if bodyGyro then
+		bodyGyro:Destroy()
+		bodyGyro = nil
 	end
 
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
 
-	humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+	humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 
-	root.CFrame = cf + Vector3.new(0, 3.5, 0)
+	for i = 1,3 do
+		root.CFrame = cf + Vector3.new(0, 3.65, 0)
+		RunService.Heartbeat:Wait()
+	end
 
-	RunService.Heartbeat:Wait()
+	root.Velocity = Vector3.zero
 
-	humanoid:ChangeState(Enum.HumanoidStateType.Running)
+	humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+
+	lastCF = root.CFrame
 end
 
 local function getCurrentPoint()
@@ -159,55 +171,63 @@ local function makeDraggable(ui, saveKey)
 	local dragStartPos, startUIPos
 
 	ui.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            drag = true
-            dragStartPos = input.Position
-            startUIPos = ui.Position
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
 
-            if ui == openBtn then
-                openBtnDragging = true
-                openBtnMoved = false
-            end
-        end
-    end)
+			drag = true
+			dragStartPos = input.Position
+			startUIPos = ui.Position
+
+			if ui == openBtn then
+				openBtnDragging = true
+				openBtnMoved = false
+			end
+		end
+	end)
 
 	ui.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            drag = false
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
 
-            if ui == openBtn then
-                task.wait()
-                openBtnDragging = false
-            end
+			drag = false
 
-            if saveKey then
-                SaveData[saveKey] = {
-                    XS = ui.Position.X.Scale,
-                    XO = ui.Position.X.Offset,
-                    YS = ui.Position.Y.Scale,
-                    YO = ui.Position.Y.Offset
-                }
-                SaveConfig()
-            end
-        end
-    end)
+			if ui == openBtn then
+				task.wait()
+				openBtnDragging = false
+			end
+
+			if saveKey then
+				SaveData[saveKey] = {
+					XS = ui.Position.X.Scale,
+					XO = ui.Position.X.Offset,
+					YS = ui.Position.Y.Scale,
+					YO = ui.Position.Y.Offset
+				}
+				SaveConfig()
+			end
+		end
+	end)
 
 	UIS.InputChanged:Connect(function(input)
-        if drag and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local delta = input.Position - dragStartPos
+		if drag and (
+			input.UserInputType == Enum.UserInputType.MouseMovement
+				or input.UserInputType == Enum.UserInputType.Touch
+			) then
 
-            if ui == openBtn and delta.Magnitude > 3 then
-                openBtnMoved = true
-            end
+			local delta = input.Position - dragStartPos
 
-            ui.Position = UDim2.new(
-                startUIPos.X.Scale,
-                startUIPos.X.Offset + delta.X,
-                startUIPos.Y.Scale,
-                startUIPos.Y.Offset + delta.Y
-            )
-        end
-    end)
+			if ui == openBtn and delta.Magnitude > 3 then
+				openBtnMoved = true
+			end
+
+			ui.Position = UDim2.new(
+				startUIPos.X.Scale,
+				startUIPos.X.Offset + delta.X,
+				startUIPos.Y.Scale,
+				startUIPos.Y.Offset + delta.Y
+			)
+		end
+	end)
 end
 
 if player.PlayerGui:FindFirstChild("AdminFlyGUI") then
@@ -369,11 +389,11 @@ player.CharacterAdded:Connect(function()
 
 	teleporting = false
 	_G.AdminFlyTeleporting = false
-	
-    if tpLoopBtn then tpLoopBtn.Text = "TP LOOP : OFF" end
 
-    task.wait(0.3)
-    
+	if tpLoopBtn then tpLoopBtn.Text = "TP LOOP : OFF" end
+
+	task.wait(0.3)
+
 	applyAutoOpen()
 end)
 
@@ -472,8 +492,8 @@ local function addClose(f)
 	x.TextScaled = true
 	x.Font = Enum.Font.GothamBold
 	x.BackgroundColor3 = Color3.fromRGB(180,60,60)
-    x.TextStrokeTransparency = 0
-    x.TextStrokeColor3 = Color3.new(0,0,0)
+	x.TextStrokeTransparency = 0
+	x.TextStrokeColor3 = Color3.new(0,0,0)
 	x.TextColor3 = Color3.new(1,1,1)
 	x.BorderSizePixel = 0
 	Instance.new("UICorner", x).CornerRadius = UDim.new(1,0)
@@ -487,49 +507,49 @@ addClose(selectFrame)
 
 local function ServerHop()
 
-    local req = request or http_request or syn and syn.request
-    if not req then
-        warn("Executor does not support requests")
-        return
-    end
+	local req = request or http_request or syn and syn.request
+	if not req then
+		warn("Executor does not support requests")
+		return
+	end
 
-    local servers = {}
-    local cursor = ""
+	local servers = {}
+	local cursor = ""
 
-    for i = 1,3 do
+	for i = 1,3 do
 
-        local url = "https://games.roblox.com/v1/games/"..PlaceId.."/servers/Public?sortOrder=Asc&limit=100&cursor="..cursor
+		local url = "https://games.roblox.com/v1/games/"..PlaceId.."/servers/Public?sortOrder=Asc&limit=100&cursor="..cursor
 
-        local success, response = pcall(function()
-            return req({Url = url, Method = "GET"})
-        end)
+		local success, response = pcall(function()
+			return req({Url = url, Method = "GET"})
+		end)
 
-        if success and response and response.Body then
-            local data = HttpService:JSONDecode(response.Body)
+		if success and response and response.Body then
+			local data = HttpService:JSONDecode(response.Body)
 
-            for _, s in ipairs(data.data) do
-                if s.id ~= game.JobId and s.playing < s.maxPlayers then
-                    table.insert(servers, s.id)
-                end
-            end
+			for _, s in ipairs(data.data) do
+				if s.id ~= game.JobId and s.playing < s.maxPlayers then
+					table.insert(servers, s.id)
+				end
+			end
 
-            if #servers > 0 then break end
+			if #servers > 0 then break end
 
-            cursor = data.nextPageCursor
-            if not cursor then break end
-        else
-            break
-        end
-    end
+			cursor = data.nextPageCursor
+			if not cursor then break end
+		else
+			break
+		end
+	end
 
-    if #servers > 0 then
-        local chosen = servers[math.random(#servers)]
-        print("Joining new server...")
-        task.wait(0.155)
-        TeleportService:TeleportToPlaceInstance(PlaceId, chosen, player)
-    else
-        warn("No suitable server found")
-    end
+	if #servers > 0 then
+		local chosen = servers[math.random(#servers)]
+		print("Joining new server...")
+		task.wait(0.155)
+		TeleportService:TeleportToPlaceInstance(PlaceId, chosen, player)
+	else
+		warn("No suitable server found")
+	end
 end
 
 local function populate(frameUI, mode)
@@ -542,8 +562,8 @@ local function populate(frameUI, mode)
 		b.Position = UDim2.fromScale(0.075, 0.05 + (i - 1) * 0.085)
 		b.TextScaled = true
 		b.Font = Enum.Font.GothamBold
-        b.TextStrokeTransparency = 0
-        b.TextStrokeColor3 = Color3.new(0,0,0)
+		b.TextStrokeTransparency = 0
+		b.TextStrokeColor3 = Color3.new(0,0,0)
 		b.BorderSizePixel = 0
 		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 10)
 
@@ -560,12 +580,12 @@ local function populate(frameUI, mode)
 
 			b.MouseButton1Click:Connect(function()
 				if teleportPoints[i] then
-                    teleportPoints[i] = nil
+					teleportPoints[i] = nil
 
-                    local found = table.find(selectedPoints, i)
-                    if found then
-                        table.remove(selectedPoints, found)
-                    end
+					local found = table.find(selectedPoints, i)
+					if found then
+						table.remove(selectedPoints, found)
+					end
 				else
 					teleportPoints[i] = root.CFrame
 				end
@@ -586,34 +606,34 @@ local function populate(frameUI, mode)
 				b.BackgroundColor3 = Color3.fromRGB(0, 180, 120)
 				b.TextColor3 = Color3.new(1, 1, 1)
 
-                b.MouseButton1Click:Connect(function()
-                    local found = table.find(selectedPoints, i)
+				b.MouseButton1Click:Connect(function()
+					local found = table.find(selectedPoints, i)
 
-                    if found then
-                        table.remove(selectedPoints, found)
-                    else
-                        if #selectedPoints < 2 then
-                            table.insert(selectedPoints, i)
-                        else
-                            selectedPoints[1] = selectedPoints[2]
-                            selectedPoints[2] = i
-                        end
-                    end
+					if found then
+						table.remove(selectedPoints, found)
+					else
+						if #selectedPoints < 2 then
+							table.insert(selectedPoints, i)
+						else
+							selectedPoints[1] = selectedPoints[2]
+							selectedPoints[2] = i
+						end
+					end
 
-                    _G.AdminFlyTeleporting = true
-                    teleporting = true
-                    tpLoopBtn.Text = "TP LOOP : OFF"
-                    toggleIndex = 1
+					_G.AdminFlyTeleporting = true
+					teleporting = true
+					tpLoopBtn.Text = "TP LOOP : OFF"
+					toggleIndex = 1
 
-                    if #selectedPoints == 0 then
-                        selectBtn.Text = selectDefaultText
-                    elseif #selectedPoints == 1 then
-                        selectBtn.Text = "SELECT SET TELEPORT: POINT " .. selectedPoints[1]
-                    else
-                        selectBtn.Text = "SELECT SET TELEPORT: POINT " .. selectedPoints[1] .. " & " .. selectedPoints[2]
-                        selectFrame.Visible = false
-                    end
-                end)
+					if #selectedPoints == 0 then
+						selectBtn.Text = selectDefaultText
+					elseif #selectedPoints == 1 then
+						selectBtn.Text = "SELECT SET TELEPORT: POINT " .. selectedPoints[1]
+					else
+						selectBtn.Text = "SELECT SET TELEPORT: POINT " .. selectedPoints[1] .. " & " .. selectedPoints[2]
+						selectFrame.Visible = false
+					end
+				end)
 			else
 				b.Text = "EMPTY"
 				b.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
@@ -666,14 +686,14 @@ autoOpenBtn.MouseButton1Click:Connect(function()
 end)
 
 tpOnceBtn.MouseButton1Click:Connect(function()
-    local idx = getCurrentPoint()
-    if idx and teleportPoints[idx] and root then
-        if flying and bodyVelocity then
-            bodyVelocity.Velocity = Vector3.zero
-        end
+	local idx = getCurrentPoint()
+	if idx and teleportPoints[idx] and root then
+		if flying and bodyVelocity then
+			bodyVelocity.Velocity = Vector3.zero
+		end
 
-        safeTeleport(teleportPoints[idx])
-    end
+		safeTeleport(teleportPoints[idx])
+	end
 end)
 
 tpLoopBtn.MouseButton1Click:Connect(function()
@@ -681,35 +701,35 @@ tpLoopBtn.MouseButton1Click:Connect(function()
 		teleporting = false
 		_G.AdminFlyTeleporting = false
 		tpLoopBtn.Text = "TP LOOP : OFF"
-        tpLoopBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		tpLoopBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 		return
 	end
 
 	if #selectedPoints == 0 then
-        warn("No teleport point selected")
-        return
-    end
+		warn("No teleport point selected")
+		return
+	end
 
 	teleporting = true
 	_G.AdminFlyTeleporting = true
 	tpLoopBtn.Text = "TP LOOP : ON"
-    tpLoopBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
-	
+	tpLoopBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
+
 	if tpThread then return end
 
-    tpThread = task.spawn(function()
-        while teleporting and _G.AdminFlyTeleporting do
-            local idx = getCurrentPoint()
-            if not teleporting then break end
+	tpThread = task.spawn(function()
+		while teleporting and _G.AdminFlyTeleporting do
+			local idx = getCurrentPoint()
+			if not teleporting then break end
 
-            if idx and teleportPoints[idx] and root then
-                safeTeleport(teleportPoints[idx])
-            end
+			if idx and teleportPoints[idx] and root then
+				safeTeleport(teleportPoints[idx])
+			end
 
-            task.wait(loopDelay)
-        end
-        tpThread = nil
-    end)
+			task.wait(loopDelay)
+		end
+		tpThread = nil
+	end)
 end)
 
 flyBtn.MouseButton1Click:Connect(function()
@@ -720,27 +740,32 @@ flyBtn.MouseButton1Click:Connect(function()
 		if bodyGyro then bodyGyro:Destroy() bodyGyro=nil end
 		if bodyVelocity then bodyVelocity:Destroy() bodyVelocity=nil end
 
-        if isMobile then
-            mobileFlyUp.Visible = false
-            mobileFlyDown.Visible = false
-        end
+		if isMobile then
+			mobileFlyUp.Visible = false
+			mobileFlyDown.Visible = false
+		end
 
 		flyBtn.Text = "FLY : OFF"
-        flyBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		flyBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 	else
 		flying = true
-        humanoid.PlatformStand = true
-		
-		local basePart = getSeatBasePart() or root
-        attachFlyMovers(basePart)
+		humanoid.PlatformStand = true
 
-        if isMobile then
-            mobileFlyUp.Visible = true
-            mobileFlyDown.Visible = true
-        end
+		local basePart = getSeatBasePart() or root
+		attachFlyMovers(basePart)
+
+		if isMobile then
+			mobileFlyUp.Visible = true
+			mobileFlyDown.Visible = true
+		end
+
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+
+		lastCF = root.CFrame
 
 		flyBtn.Text = "FLY : ON"
-        flyBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
+		flyBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
 	end
 
 	updateSpeed()
@@ -767,9 +792,9 @@ walkBtn.MouseButton1Click:Connect(function()
 		walkBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 	end
 
-    SaveData.walkSpeed = walkSpeed
-    SaveConfig()
-    updateSpeed()
+	SaveData.walkSpeed = walkSpeed
+	SaveConfig()
+	updateSpeed()
 end)
 
 plusBtn.MouseButton1Click:Connect(function()
@@ -809,40 +834,54 @@ runConnection = RunService.RenderStepped:Connect(function()
 
 	local cam = camera.CFrame
 	local move = Vector3.zero
+
 	if UIS:IsKeyDown(Enum.KeyCode.W) then move += cam.LookVector end
 	if UIS:IsKeyDown(Enum.KeyCode.S) then move -= cam.LookVector end
 	if UIS:IsKeyDown(Enum.KeyCode.A) then move -= cam.RightVector end
 	if UIS:IsKeyDown(Enum.KeyCode.D) then move += cam.RightVector end
 
-	-- PC --
-    if UIS:IsKeyDown(Enum.KeyCode.Space) then move += cam.UpVector end
-    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then move -= cam.UpVector end
+	-- PC
+	if UIS:IsKeyDown(Enum.KeyCode.Space) then move += cam.UpVector end
+	if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then move -= cam.UpVector end
 
-    -- MOBILE --
-    if mobileUp then move += cam.UpVector end
-    if mobileDown then move -= cam.UpVector end
+	-- MOBILE
+	if mobileUp then move += cam.UpVector end
+	if mobileDown then move -= cam.UpVector end
 
-    if isMobile then
-        move += humanoid.MoveDirection
-    end
+	if isMobile then
+		move += humanoid.MoveDirection * 1.2
+	end
 
 	if move.Magnitude > 0 then
-        move = move.Unit
-    else
-        bodyVelocity.Velocity = Vector3.zero
-        return
-    end
+		move = move.Unit
+	else
+		bodyVelocity.Velocity = Vector3.zero
+		return
+	end
 
 	local basePart = getSeatBasePart()
-    if not basePart then return end
+	if not basePart then return end
 
-   if bodyVelocity.Parent ~= basePart then
-        bodyVelocity.Parent = basePart
-        bodyGyro.Parent = basePart
-    end
+	if bodyVelocity.Parent ~= basePart then
+		bodyVelocity.Parent = basePart
+		bodyGyro.Parent = basePart
+	end
 
-    bodyVelocity.Velocity = move * speed
-    bodyGyro.CFrame = cam
+	local targetVelocity = move * speed
+	bodyVelocity.Velocity = targetVelocity
+
+	lastCF = basePart.CFrame
+
+	bodyGyro.CFrame = cam
+end)
+
+RunService.Heartbeat:Connect(function()
+	if not flying or not root then return end
+
+	if lastCF and (root.Position - lastCF.Position).Magnitude > 10 then
+		root.CFrame = lastCF
+		root.AssemblyLinearVelocity = Vector3.zero
+	end
 end)
 
 miniBtn.MouseButton1Click:Connect(function()
@@ -866,7 +905,7 @@ closeBtn.MouseButton1Click:Connect(function()
 
 	teleporting = false
 	_G.AdminFlyTeleporting = false
-    
+
 	flying = false
 
 	if humanoid then
@@ -880,15 +919,27 @@ closeBtn.MouseButton1Click:Connect(function()
 	gui:Destroy()
 end)
 
+mobileFlyUp.InputBegan:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.Touch then
+		mobileUp = true
+	end
+end)
+
+mobileFlyUp.InputEnded:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.Touch then
+		mobileUp = false
+	end
+end)
+
 UIS.InputBegan:Connect(function(input)
-    if not alive or not gui or not gui.Parent then return end
+	if not alive or not gui or not gui.Parent then return end
 
 	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
 
 	if input.KeyCode == Enum.KeyCode.F then
 		frame.Visible = not frame.Visible
-        openBtn.Visible = not openBtn.Visible
-        guiVisible = not guiVisible
+		openBtn.Visible = not openBtn.Visible
+		guiVisible = not guiVisible
 
 	elseif input.KeyCode == Enum.KeyCode.R then
 		if not humanoid or not root then return end
@@ -901,80 +952,80 @@ UIS.InputBegan:Connect(function(input)
 			if bodyVelocity then bodyVelocity:Destroy() bodyVelocity=nil end
 
 			flyBtn.Text = "FLY : OFF"
-            flyBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+			flyBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 		else
 			flying = true
-            humanoid.PlatformStand = true
+			humanoid.PlatformStand = true
 			local basePart = getSeatBasePart() or root
-            attachFlyMovers(basePart)
+			attachFlyMovers(basePart)
 
 			flyBtn.Text = "FLY : ON"
-            flyBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
+			flyBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
 		end
 
 		updateSpeed()
 
 	elseif input.KeyCode == Enum.KeyCode.T then
-		 local idx = getCurrentPoint()
-        if idx and teleportPoints[idx] and root then
-            if flying and bodyVelocity then
-                bodyVelocity.Velocity = Vector3.zero
-            end
+		local idx = getCurrentPoint()
+		if idx and teleportPoints[idx] and root then
+			if flying and bodyVelocity then
+				bodyVelocity.Velocity = Vector3.zero
+			end
 
-            safeTeleport(teleportPoints[idx])
-        end
+			safeTeleport(teleportPoints[idx])
+		end
 
 	elseif input.KeyCode == Enum.KeyCode.G then
 		speed += 50
-        SaveData.speed = speed
-        SaveConfig()
-        updateSpeed()
+		SaveData.speed = speed
+		SaveConfig()
+		updateSpeed()
 
 	elseif input.KeyCode == Enum.KeyCode.H then
 		speed = math.max(MIN_SPEED, speed - 50)
-        SaveData.speed = speed
-        SaveConfig()
-        updateSpeed()
+		SaveData.speed = speed
+		SaveConfig()
+		updateSpeed()
 
-    elseif input.KeyCode == Enum.KeyCode.J then
-        local tpThread
+	elseif input.KeyCode == Enum.KeyCode.J then
+		local tpThread
 
-        if teleporting then
-            teleporting = false
+		if teleporting then
+			teleporting = false
 			_G.AdminFlyTeleporting = false
-            tpLoopBtn.Text = "TP LOOP : OFF"
-            tpLoopBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-            return
-        end
+			tpLoopBtn.Text = "TP LOOP : OFF"
+			tpLoopBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+			return
+		end
 
-        if #selectedPoints == 0 then
-            warn("No teleport point selected")
-            return
-        end
+		if #selectedPoints == 0 then
+			warn("No teleport point selected")
+			return
+		end
 
-        teleporting = true
+		teleporting = true
 		_G.AdminFlyTeleporting = true
-        tpLoopBtn.Text = "TP LOOP : ON"
-        tpLoopBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
+		tpLoopBtn.Text = "TP LOOP : ON"
+		tpLoopBtn.BackgroundColor3 = Color3.fromRGB(5,185,125)
 
-      if tpThread then return end
+		if tpThread then return end
 
-        tpThread = task.spawn(function()
-            while teleporting and _G.AdminFlyTeleporting do
-                local idx = getCurrentPoint()
-                if not teleporting then break end
+		tpThread = task.spawn(function()
+			while teleporting and _G.AdminFlyTeleporting do
+				local idx = getCurrentPoint()
+				if not teleporting then break end
 
-                if idx and teleportPoints[idx] and root then
-                    safeTeleport(teleportPoints[idx])
-                end
+				if idx and teleportPoints[idx] and root then
+					safeTeleport(teleportPoints[idx])
+				end
 
-                task.wait(loopDelay)
-            end
-            tpThread = nil
-        end)
+				task.wait(loopDelay)
+			end
+			tpThread = nil
+		end)
 
-    elseif input.KeyCode == Enum.KeyCode.K then
-        ServerHop()
+	elseif input.KeyCode == Enum.KeyCode.K then
+		ServerHop()
 	end
 end)
 
@@ -1010,13 +1061,13 @@ Workspace.DescendantAdded:Connect(function(v)
 end)
 
 task.spawn(function()
-    while alive do
-        task.wait(5)
+	while alive do
+		task.wait(5)
 
-        if not player.Character or not root then
-            character, humanoid, root = getChar()
-        end
-    end
+		if not player.Character or not root then
+			character, humanoid, root = getChar()
+		end
+	end
 end)
 
 task.delay(1.05, applyAutoOpen)
